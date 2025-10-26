@@ -16,7 +16,7 @@ function TradeList({ title, items, color }: { title: string; items: Trade[]; col
           <div>Qty</div>
         </div>
         <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-          {items.slice(-100).map((t, i) => (
+          {items.slice(-100).reverse().map((t, i) => (
             <div key={t.ts + ':' + i} style={{ display: 'grid', gridTemplateColumns: '100px 1fr 1fr', gap: 8, padding: '6px 8px', fontSize: 12, borderBottom: '1px dotted #1a1a1a' }}>
               <div style={{ color: '#999' }}>{fmtTime(t.ts)}</div>
               <div style={{ color }}>{t.price}</div>

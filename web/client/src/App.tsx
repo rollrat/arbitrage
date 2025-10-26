@@ -9,7 +9,18 @@ const DEFAULT_WS = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${locati
 const WS_URL: string = (import.meta as any).env?.VITE_WS_URL || DEFAULT_WS
 const API_BASE: string = (import.meta as any).env?.VITE_API_BASE || ''
 
-type TF = 'tick' | '1s' | '1m'
+type TF = '1s' | '3s' | '5s' | '15s' | '30s' | '1m' | '3m' | '5m' | '10m' | '30m' | '1h' | '3h' | '6h' | '12h' | '1D'
+
+const TF_LIST: TF[] = ['1s', '3s', '5s', '15s', '30s', '1m', '3m', '5m', '10m', '30m', '1h', '3h', '6h', '12h', '1D']
+
+function tfToBucketMs(tf: TF): number {
+  // support suffix parsing: s(sec), m(min), h(hour), D(day)
+  if (tf.endsWith('s')) return parseInt(tf) * 1000
+  if (tf.endsWith('m')) return parseInt(tf) * 60_000
+  if (tf.endsWith('h')) return parseInt(tf) * 3_600_000
+  if (tf === '1D') return 86_400_000
+  return 1_000
+}
 
 function useWs(onFirstOpen?: () => void) {
   const [tick, setTick] = useState<Tick | null>(null)
@@ -72,12 +83,14 @@ export default function App() {
   const spotCandlesRef = useRef<Candle[]>([])
   const markCandlesRef = useRef<Candle[]>([])
   const candleFlushTimer = useRef<any>(null)
+  const [initRightSig, setInitRightSig] = useState(0)
+  const initTriggeredRef = useRef(false)
 
   // initial 10m backfill from server (if available)
   useEffect(() => {
     let aborted = false
     const now = Date.now()
-    const from = now - 60 * 60 * 1000
+    const from = now - 7 * 24 * 60 * 60 * 1000
     // const from = now - 1000;
     fetch(`${API_BASE}/api/history/ticks?from=${from}&to=${now}`)
       .then(r => (r.ok ? r.json() : []))
@@ -88,7 +101,7 @@ export default function App() {
         setTicks(mapped)
         // no tick line build
         // build initial candles for current tf
-        const curBucket = (tf === '1m') ? 60000 : 1000
+        const curBucket = tfToBucketMs(tf)
         const outB: Candle[] = []
         const outS: Candle[] = []
         const outM: Candle[] = []
@@ -116,23 +129,17 @@ export default function App() {
         if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
         basisCandlesRef.current = outB; spotCandlesRef.current = outS; markCandlesRef.current = outM
         setBasisCandles(outB); setSpotCandles(outS); setMarkCandles(outM)
+        if (!initTriggeredRef.current && outB.length && outS.length && outM.length) {
+          initTriggeredRef.current = true
+          setInitRightSig(v => v + 1)
+        }
         // do not auto-scroll on initial backfill; keep viewport stable
       })
       .catch(() => { /* ignore, fallback to WS only */ })
     return () => { aborted = true }
   }, [])
 
-  const bucketMs = useMemo(() => {
-    switch (tf) {
-      case '1m':
-        return 60000
-      case '1s':
-      case 'tick':
-      default:
-        // lightweight-charts 罹붾뱾 ?쒕━利덈뒗 珥덈떒?꾨쭔 吏????1珥?踰꾪궥
-        return 1000
-    }
-  }, [tf])
+  const bucketMs = useMemo(() => tfToBucketMs(tf), [tf])
   // keep all ticks strictly ascending by ts (ignore out-of-order)
   const lastTsRef = useRef<number>(0)
   useEffect(() => {
@@ -222,6 +229,10 @@ export default function App() {
     setBasisCandles(outB)
     setSpotCandles(outS)
     setMarkCandles(outM)
+    if (!initTriggeredRef.current && outB.length && outS.length && outM.length) {
+      initTriggeredRef.current = true
+      setInitRightSig(v => v + 1)
+    }
   }, [bucketMs])
 
   // one-time initial candle build when ticks arrive (in case tf build ran before fetch completed)
@@ -275,14 +286,14 @@ export default function App() {
       if (spotBuf.length) {
         const chunk = spotBuf.splice(0, spotBuf.length)
         setSpotTrades(arr => {
-          const next = [...arr, ...chunk]
+          const next = [...arr.reverse(), ...chunk]
           return next.length > 200 ? next.slice(-200) : next
         })
       }
       if (futBuf.length) {
         const chunk = futBuf.splice(0, futBuf.length)
         setFutTrades(arr => {
-          const next = [...arr, ...chunk]
+          const next = [...arr.reverse(), ...chunk]
           return next.length > 200 ? next.slice(-200) : next
         })
       }
@@ -318,9 +329,10 @@ export default function App() {
           {coinIconUrl ? <img src={coinIconUrl} alt="coin" style={{ width: 20, height: 20 }} /> : null}
           Basis Viewer
         </h2>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setTf('1s')} style={{ padding: '4px 8px', background: tf === '1s' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1s</button>
-          <button onClick={() => setTf('1m')} style={{ padding: '4px 8px', background: tf === '1m' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1m</button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {TF_LIST.map(t => (
+            <button key={t} onClick={() => setTf(t)} style={{ padding: '4px 8px', background: tf === t ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>{t}</button>
+          ))}
         </div>
       </div>
 
@@ -330,13 +342,13 @@ export default function App() {
       </div>
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Basis</div>
-      <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" />
+      <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey={`tf-sync-${tf}`} initRightSig={initRightSig} />
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Spot</div>
-      <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" />
+      <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey={`tf-sync-${tf}`} />
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark</div>
-      <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" />
+      <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey={`tf-sync-${tf}`} />
 
       <Trades spot={spotTrades} fut={futTrades} />
     </div>

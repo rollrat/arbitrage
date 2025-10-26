@@ -3,10 +3,10 @@
   "dir": "reverse",
   "qty": 0.00131,
   "symbol": "BTCUSDT",
-  "last_open_basis_bps": -0.8198967213924437,
+  "last_open_basis_bps": -3.867253087231501,
   "actions": {
     "spot_sell": null,
     "futures_long": null
   },
-  "last_close_basis_bps": -0.0783193615405135
+  "last_close_basis_bps": -3.867253087231501
 }
