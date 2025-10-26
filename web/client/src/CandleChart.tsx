@@ -11,6 +11,10 @@ export default function CandleChart({
   upColor = '#26a69a',
   downColor = '#ef5350',
   gridColor = '#2a2a2a',
+  sync = false,
+  syncRange,
+  onRangeChange,
+  resetSignal,
 }: {
   data: Candle[]
   height?: number
@@ -19,14 +23,21 @@ export default function CandleChart({
   upColor?: string
   downColor?: string
   gridColor?: string
+  sync?: boolean
+  syncRange?: { from: number; to: number } | null
+  onRangeChange?: (r: { from: number; to: number }) => void
+  resetSignal?: number
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<ReturnType<typeof LWC.createChart> | null>(null)
   const seriesRef = useRef<ReturnType<ReturnType<typeof LWC.createChart>['addCandlestickSeries']> | null>(null)
+  const applyingRef = useRef(false)
+  const lastEmittedRef = useRef<{ from: number; to: number } | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
+
     const chart = LWC.createChart(el, {
       width: el.clientWidth || 800,
       height,
@@ -37,15 +48,29 @@ export default function CandleChart({
     })
     chartRef.current = chart
 
-    if (typeof chart.addCandlestickSeries !== 'function') {
-      console.error('lightweight-charts addCandlestickSeries unavailable. Ensure v4 is installed.')
-      return () => { chart.remove(); chartRef.current = null; seriesRef.current = null }
-    }
-
     const series = chart.addCandlestickSeries({
-      upColor, downColor, borderVisible: false, wickUpColor: upColor, wickDownColor: downColor,
+      upColor,
+      downColor,
+      borderVisible: false,
+      wickUpColor: upColor,
+      wickDownColor: downColor,
     })
     seriesRef.current = series
+
+    if (sync) {
+      try {
+        chart.timeScale().subscribeVisibleLogicalRangeChange((range: any) => {
+          if (applyingRef.current) return
+          if (!range || range.from === undefined || range.to === undefined) return
+          const next = { from: Number(range.from), to: Number(range.to) }
+          const prev = lastEmittedRef.current
+          if (!prev || prev.from !== next.from || prev.to !== next.to) {
+            lastEmittedRef.current = next
+            onRangeChange?.(next)
+          }
+        })
+      } catch {}
+    }
 
     const onResize = () => {
       if (containerRef.current) {
@@ -54,13 +79,43 @@ export default function CandleChart({
     }
     onResize()
     window.addEventListener('resize', onResize)
-    return () => { window.removeEventListener('resize', onResize); chart.remove(); chartRef.current = null; seriesRef.current = null }
-  }, [background, textColor, upColor, downColor, gridColor, height])
 
+    return () => {
+      window.removeEventListener('resize', onResize)
+      chart.remove()
+      chartRef.current = null
+      seriesRef.current = null
+      lastEmittedRef.current = null
+      applyingRef.current = false
+    }
+  }, [background, textColor, upColor, downColor, gridColor, height, sync, onRangeChange])
+
+  // apply external sync range safely
+  useEffect(() => {
+    if (!sync) return
+    const c = chartRef.current
+    if (!c || !syncRange || syncRange.from === undefined || syncRange.to === undefined) return
+    try {
+      applyingRef.current = true
+      c.timeScale().setVisibleLogicalRange(syncRange as any)
+    } catch {} finally {
+      // small timeout to avoid immediate echo
+      setTimeout(() => { applyingRef.current = false }, 0)
+    }
+  }, [sync, syncRange])
+
+  // reset to latest on signal
+  useEffect(() => {
+    if (!resetSignal) return
+    try { chartRef.current?.timeScale().scrollToRealTime() } catch {}
+  }, [resetSignal])
+
+  // set data
   useEffect(() => {
     const s = seriesRef.current
     if (!s) return
-    s.setData((data ?? []).map(c => ({ time: Math.floor(c.time), open: c.open, high: c.high, low: c.low, close: c.close })) as any)
+    const arr = (data ?? []).map(c => ({ time: Math.floor(c.time), open: c.open, high: c.high, low: c.low, close: c.close }))
+    s.setData(arr as any)
   }, [data])
 
   return <div ref={containerRef} style={{ width: '100%', height, background }} />

@@ -9,7 +9,11 @@ export default defineConfig({
         ws: true,
         changeOrigin: true
       },
-      '/health': 'http://localhost:4000'
+      '/health': 'http://localhost:4000',
+      '/api': {
+        target: 'http://localhost:4000',
+        changeOrigin: true,
+      }
     }
   }
 })

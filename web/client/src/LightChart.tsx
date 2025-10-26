@@ -9,53 +9,51 @@ export default function LightChart({
   color = '#3498db',
   background = '#111',
   textColor = '#ddd',
+  resetSignal,
 }: {
   data: LinePoint[]
   height?: number
   color?: string
   background?: string
   textColor?: string
+  resetSignal?: number
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<ReturnType<typeof LWC.createChart> | null>(null)
   const seriesRef = useRef<ReturnType<ReturnType<typeof LWC.createChart>['addLineSeries']> | null>(null)
 
   useEffect(() => {
-    if (!containerRef.current) return
-    // 차트 생성
-    const chart = LWC.createChart(containerRef.current, {
+    const el = containerRef.current
+    if (!el) return
+    const chart = LWC.createChart(el, {
+      width: el.clientWidth || 800,
+      height,
       layout: { background: { color: background }, textColor },
       rightPriceScale: { visible: true, borderVisible: false },
       timeScale: { timeVisible: true, secondsVisible: true, borderVisible: false },
       grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
-      height,
-      localization: { timeFormatter: (t: any) => new Date(((typeof t==='number'?t:0))*1000).toLocaleTimeString() },
+      localization: { timeFormatter: (t: any) => new Date(((typeof t === 'number' ? t : 0)) * 1000).toLocaleTimeString() },
     })
     chartRef.current = chart
-
-    if (typeof chart.addLineSeries !== 'function') {
-      console.error('lightweight-charts addLineSeries unavailable. Ensure version 4.x is installed.')
-      return () => { chart.remove(); chartRef.current = null; seriesRef.current = null }
-    }
 
     const series = chart.addLineSeries({ color, lineWidth: 2 })
     seriesRef.current = series
 
-    const handleResize = () => {
+    const onResize = () => {
       if (containerRef.current) {
         chart.applyOptions({ width: containerRef.current.clientWidth, height })
       }
     }
-    handleResize()
-    window.addEventListener('resize', handleResize)
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => { window.removeEventListener('resize', onResize); chart.remove(); chartRef.current = null; seriesRef.current = null }
+  }, [background, textColor, color, height])
 
-    return () => {
-      window.removeEventListener('resize', handleResize)
-      chart.remove()
-      chartRef.current = null
-      seriesRef.current = null
-    }
-  }, [textColor, color, height])
+  // reset to latest on signal
+  useEffect(() => {
+    if (!resetSignal) return
+    try { chartRef.current?.timeScale().scrollToRealTime() } catch { }
+  }, [resetSignal])
 
   useEffect(() => {
     const s = seriesRef.current
@@ -66,4 +64,3 @@ export default function LightChart({
 
   return <div ref={containerRef} style={{ width: '100%', height, background }} />
 }
-
