@@ -69,6 +69,8 @@ export default function App() {
   const [spotLine, setSpotLine] = useState<LinePoint[]>([])
   const [markLine, setMarkLine] = useState<LinePoint[]>([])
   const lastSecRef = useRef<number>(-Infinity)
+  const tickIndexRef = useRef<number>(-1)
+  const indexTimesRef = useRef<number[]>([])
   const [basisCandles, setBasisCandles] = useState<Candle[]>([])
   const [spotCandles, setSpotCandles] = useState<Candle[]>([])
   const [markCandles, setMarkCandles] = useState<Candle[]>([])
@@ -91,19 +93,19 @@ export default function App() {
         mapped.sort((a, b) => a.ts - b.ts)
         setTicks(mapped)
         // build initial tick lines once
-        let lastSec = -Infinity
         const bl: LinePoint[] = []
         const sl: LinePoint[] = []
         const ml: LinePoint[] = []
+        indexTimesRef.current = []
+        let idx = -1
         for (const t of mapped) {
-          let sec = Math.floor(t.ts / 1000)
-          if (sec <= lastSec) sec = lastSec + 1
-          bl.push({ time: sec as any, value: t.basisBps })
-          sl.push({ time: sec as any, value: t.spot })
-          ml.push({ time: sec as any, value: t.mark })
-          lastSec = sec
+          idx += 1
+          indexTimesRef.current.push(t.ts)
+          bl.push({ time: idx as any, value: t.basisBps })
+          sl.push({ time: idx as any, value: t.spot })
+          ml.push({ time: idx as any, value: t.mark })
         }
-        lastSecRef.current = lastSec
+        tickIndexRef.current = idx
         setBasisLine(bl); setSpotLine(sl); setMarkLine(ml)
         // build initial candles for current tf
         const curBucket = (tf === '1m') ? 60000 : 1000
@@ -163,12 +165,11 @@ export default function App() {
     // append to tick lines incrementally (used only in tick mode rendering)
     const vBasis = tick.basisBps, vSpot = tick.spot, vMark = tick.mark
     if (Number.isFinite(vBasis) && Number.isFinite(vSpot) && Number.isFinite(vMark)) {
-      let sec = Math.floor(tick.ts / 1000)
-      if (sec <= lastSecRef.current) sec = lastSecRef.current + 1
-      lastSecRef.current = sec
-      setBasisLine(arr => [...arr, { time: sec as any, value: vBasis }])
-      setSpotLine(arr => [...arr, { time: sec as any, value: vSpot }])
-      setMarkLine(arr => [...arr, { time: sec as any, value: vMark }])
+      const idx = (tickIndexRef.current = tickIndexRef.current + 1)
+      indexTimesRef.current.push(tick.ts)
+      setBasisLine(arr => [...arr, { time: idx as any, value: vBasis }])
+      setSpotLine(arr => [...arr, { time: idx as any, value: vSpot }])
+      setMarkLine(arr => [...arr, { time: idx as any, value: vMark }])
       // incrementally update candles into refs (batch UI publish)
       const k = Math.floor(tick.ts / bucketMs)
       const time = k * (bucketMs / 1000)
@@ -354,21 +355,21 @@ export default function App() {
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Basis</div>
       {tf === 'tick' ? (
-        <LightChart data={basisLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+        <LightChart data={basisLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" indexToTs={indexTimesRef.current} />
       ) : (
         <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
       )}
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Spot</div>
       {tf === 'tick' ? (
-        <LightChart data={spotLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+        <LightChart data={spotLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" indexToTs={indexTimesRef.current} />
       ) : (
         <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
       )}
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark</div>
       {tf === 'tick' ? (
-        <LightChart data={markLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+        <LightChart data={markLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" indexToTs={indexTimesRef.current} />
       ) : (
         <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
       )}

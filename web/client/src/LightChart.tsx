@@ -15,6 +15,7 @@ export default function LightChart({
   syncKey,
   syncRange,
   onRangeChange,
+  indexToTs,
 }: {
   data: LinePoint[]
   height?: number
@@ -26,6 +27,7 @@ export default function LightChart({
   syncKey?: string
   syncRange?: { from: number; to: number } | null
   onRangeChange?: (r: { from: number; to: number }) => void
+  indexToTs?: number[]
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<ReturnType<typeof LWC.createChart> | null>(null)
@@ -48,7 +50,15 @@ export default function LightChart({
       rightPriceScale: { visible: true, borderVisible: false },
       timeScale: { timeVisible: true, secondsVisible: true, borderVisible: false },
       grid: { vertLines: { color: '#2a2a2a' }, horzLines: { color: '#2a2a2a' } },
-      localization: { timeFormatter: (t: any) => new Date(((typeof t === 'number' ? t : 0)) * 1000).toLocaleTimeString() },
+      localization: {
+        timeFormatter: (t: any) => {
+          const idx = typeof t === 'number' ? t : Number(t)
+          if (Array.isArray(indexToTs) && Number.isInteger(idx) && indexToTs[idx] != null) {
+            return new Date(indexToTs[idx]).toLocaleTimeString()
+          }
+          return String(idx)
+        },
+      },
     })
     chartRef.current = chart
 
@@ -94,7 +104,7 @@ export default function LightChart({
       lastTimeRef.current = null
       try { unsubRef.current?.() } catch {}
     }
-  }, [background, textColor, color, height, sync, onRangeChange, syncKey])
+  }, [background, textColor, color, height, sync, onRangeChange, syncKey, indexToTs])
 
   // reset to latest on signal
   useEffect(() => {
