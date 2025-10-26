@@ -15,6 +15,7 @@ function useWs(onFirstOpen?: () => void) {
   const [tick, setTick] = useState<Tick | null>(null)
   const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting')
   useEffect(() => {
+    console.log('useWs')
     let ws: WebSocket | null = new WebSocket(WS_URL)
     let timer: any
     ws.onopen = () => { setStatus('open'); onFirstOpen?.() }
@@ -71,6 +72,10 @@ export default function App() {
   const [basisCandles, setBasisCandles] = useState<Candle[]>([])
   const [spotCandles, setSpotCandles] = useState<Candle[]>([])
   const [markCandles, setMarkCandles] = useState<Candle[]>([])
+  const basisCandlesRef = useRef<Candle[]>([])
+  const spotCandlesRef = useRef<Candle[]>([])
+  const markCandlesRef = useRef<Candle[]>([])
+  const candleFlushTimer = useRef<any>(null)
 
   // initial 10m backfill from server (if available)
   useEffect(() => {
@@ -99,11 +104,51 @@ export default function App() {
         }
         lastSecRef.current = lastSec
         setBasisLine(bl); setSpotLine(sl); setMarkLine(ml)
+        // build initial candles for current tf
+        const curBucket = (tf === '1m') ? 60000 : 1000
+        const outB: Candle[] = []
+        const outS: Candle[] = []
+        const outM: Candle[] = []
+        let key: number | null = null
+        let cb: Candle | null = null
+        let cs: Candle | null = null
+        let cm: Candle | null = null
+        for (const t of mapped) {
+          const k = Math.floor(t.ts / curBucket)
+          const time = k * (curBucket / 1000)
+          if (key === null || k !== key) {
+            if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
+            key = k
+            const b = t.basisBps, s = t.spot, m = t.mark
+            cb = { time, open: b, high: b, low: b, close: b }
+            cs = { time, open: s, high: s, low: s, close: s }
+            cm = { time, open: m, high: m, low: m, close: m }
+          } else {
+            const b = t.basisBps, s = t.spot, m = t.mark
+            if (cb) { cb.high = Math.max(cb.high, b); cb.low = Math.min(cb.low, b); cb.close = b }
+            if (cs) { cs.high = Math.max(cs.high, s); cs.low = Math.min(cs.low, s); cs.close = s }
+            if (cm) { cm.high = Math.max(cm.high, m); cm.low = Math.min(cm.low, m); cm.close = m }
+          }
+        }
+        if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
+        basisCandlesRef.current = outB; spotCandlesRef.current = outS; markCandlesRef.current = outM
+        setBasisCandles(outB); setSpotCandles(outS); setMarkCandles(outM)
       })
       .catch(() => { /* ignore, fallback to WS only */ })
     return () => { aborted = true }
   }, [])
 
+  const bucketMs = useMemo(() => {
+    switch (tf) {
+      case '1m':
+        return 60000
+      case '1s':
+      case 'tick':
+      default:
+        // lightweight-charts 罹붾뱾 ?쒕━利덈뒗 珥덈떒?꾨쭔 吏????1珥?踰꾪궥
+        return 1000
+    }
+  }, [tf])
   // keep all ticks strictly ascending by ts (ignore out-of-order)
   const lastTsRef = useRef<number>(0)
   useEffect(() => {
@@ -123,48 +168,116 @@ export default function App() {
       setBasisLine(arr => [...arr, { time: sec as any, value: vBasis }])
       setSpotLine(arr => [...arr, { time: sec as any, value: vSpot }])
       setMarkLine(arr => [...arr, { time: sec as any, value: vMark }])
-    }
-  }, [tick])
-
-  const bucketMs = useMemo(() => {
-    switch (tf) {
-      case '1m':
-        return 60000
-      case '1s':
-      case 'tick':
-      default:
-        // lightweight-charts 罹붾뱾 ?쒕━利덈뒗 珥덈떒?꾨쭔 吏????1珥?踰꾪궥
-        return 1000
-    }
-  }, [tf])
-  // tick-mode lines are maintained incrementally above to avoid O(n) rebuilds
-  // candles
-  // maintain candles incrementally; rebuild on tf change
-  useEffect(() => {
-    if (!ticks.length) { setBasisCandles([]); setSpotCandles([]); setMarkCandles([]); return }
-    const buildCandles = (pick: (t: Tick) => number): Candle[] => {
-      const out: Candle[] = []
-      let curKey: number | null = null
-      let cur: Candle | null = null
-      for (const t of ticks) {
-        const v = pick(t); if (!Number.isFinite(v)) continue
-        const k = Math.floor(t.ts / bucketMs)
-        const time = k * (bucketMs / 1000)
-        if (curKey === null || k !== curKey) {
-          if (cur) out.push(cur)
-          curKey = k
-          cur = { time, open: v, high: v, low: v, close: v }
+      // incrementally update candles into refs (batch UI publish)
+      const k = Math.floor(tick.ts / bucketMs)
+      const time = k * (bucketMs / 1000)
+      const updRef = (ref: React.MutableRefObject<Candle[]>, price: number) => {
+        if (!Number.isFinite(price)) return
+        const a = ref.current
+        const n = a.length
+        if (n && a[n - 1].time === time) {
+          const c = a[n - 1]
+          c.high = Math.max(c.high, price)
+          c.low = Math.min(c.low, price)
+          c.close = price
         } else {
-          if (cur) { cur.high = Math.max(cur.high, v); cur.low = Math.min(cur.low, v); cur.close = v }
+          a.push({ time, open: price, high: price, low: price, close: price })
         }
       }
-      if (cur) out.push(cur)
-      return out
+      updRef(basisCandlesRef, vBasis)
+      updRef(spotCandlesRef, vSpot)
+      updRef(markCandlesRef, vMark)
+      if (!candleFlushTimer.current) {
+        candleFlushTimer.current = setTimeout(() => {
+          candleFlushTimer.current = null
+          setBasisCandles([...basisCandlesRef.current])
+          setSpotCandles([...spotCandlesRef.current])
+          setMarkCandles([...markCandlesRef.current])
+        }, 80)
+      }
     }
-    setBasisCandles(buildCandles(t => t.basisBps))
-    setSpotCandles(buildCandles(t => t.spot))
-    setMarkCandles(buildCandles(t => t.mark))
-  }, [bucketMs, ticks])
+  }, [tick, bucketMs])
+
+  // tick-mode lines are maintained incrementally above to avoid O(n) rebuilds
+  // candles
+  // rebuild candles on tf change only (single pass over ticks for all series)
+  useEffect(() => {
+    if (!ticks.length) {
+      basisCandlesRef.current = []
+      spotCandlesRef.current = []
+      markCandlesRef.current = []
+      setBasisCandles([]); setSpotCandles([]); setMarkCandles([])
+      return
+    }
+    const outB: Candle[] = []
+    const outS: Candle[] = []
+    const outM: Candle[] = []
+    let key: number | null = null
+    let cb: Candle | null = null
+    let cs: Candle | null = null
+    let cm: Candle | null = null
+    for (const t of ticks) {
+      const kb = Math.floor(t.ts / bucketMs)
+      const time = kb * (bucketMs / 1000)
+      if (key === null || kb !== key) {
+        if (cb) outB.push(cb)
+        if (cs) outS.push(cs)
+        if (cm) outM.push(cm)
+        key = kb
+        const b = t.basisBps, s = t.spot, m = t.mark
+        cb = { time, open: b, high: b, low: b, close: b }
+        cs = { time, open: s, high: s, low: s, close: s }
+        cm = { time, open: m, high: m, low: m, close: m }
+      } else {
+        const b = t.basisBps, s = t.spot, m = t.mark
+        if (cb) { cb.high = Math.max(cb.high, b); cb.low = Math.min(cb.low, b); cb.close = b }
+        if (cs) { cs.high = Math.max(cs.high, s); cs.low = Math.min(cs.low, s); cs.close = s }
+        if (cm) { cm.high = Math.max(cm.high, m); cm.low = Math.min(cm.low, m); cm.close = m }
+      }
+    }
+    if (cb) outB.push(cb)
+    if (cs) outS.push(cs)
+    if (cm) outM.push(cm)
+    basisCandlesRef.current = outB
+    spotCandlesRef.current = outS
+    markCandlesRef.current = outM
+    setBasisCandles(outB)
+    setSpotCandles(outS)
+    setMarkCandles(outM)
+  }, [bucketMs])
+
+  // one-time initial candle build when ticks arrive (in case tf build ran before fetch completed)
+  useEffect(() => {
+    if (!ticks.length) return
+    if (basisCandlesRef.current.length || spotCandlesRef.current.length || markCandlesRef.current.length) return
+    const outB: Candle[] = []
+    const outS: Candle[] = []
+    const outM: Candle[] = []
+    let key: number | null = null
+    let cb: Candle | null = null
+    let cs: Candle | null = null
+    let cm: Candle | null = null
+    for (const t of ticks) {
+      const k = Math.floor(t.ts / bucketMs)
+      const time = k * (bucketMs / 1000)
+      if (key === null || k !== key) {
+        if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
+        key = k
+        const b = t.basisBps, s = t.spot, m = t.mark
+        cb = { time, open: b, high: b, low: b, close: b }
+        cs = { time, open: s, high: s, low: s, close: s }
+        cm = { time, open: m, high: m, low: m, close: m }
+      } else {
+        const b = t.basisBps, s = t.spot, m = t.mark
+        if (cb) { cb.high = Math.max(cb.high, b); cb.low = Math.min(cb.low, b); cb.close = b }
+        if (cs) { cs.high = Math.max(cs.high, s); cs.low = Math.min(cs.low, s); cs.close = s }
+        if (cm) { cm.high = Math.max(cm.high, m); cm.low = Math.min(cm.low, m); cm.close = m }
+      }
+    }
+    if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
+    basisCandlesRef.current = outB; spotCandlesRef.current = outS; markCandlesRef.current = outM
+    setBasisCandles(outB); setSpotCandles(outS); setMarkCandles(outM)
+  }, [ticks.length, bucketMs])
 
   const symbol = tick?.symbol ?? 'BTCUSDT'
 
