@@ -1,6 +1,9 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
 // LightChart removed per request; use candles for all TFs
 import CandleChart, { Candle } from './CandleChart'
+import RSIChart from './RSIChart'
+import MACDChart from './MACDChart'
+import { calcRSI, calcMACD } from './indicators'
 import { Tick, Trade } from './types'
 import { resolveCoinIcon } from './coinIcon'
 import Trades from './Trades'
@@ -79,6 +82,8 @@ export default function App() {
   const [basisCandles, setBasisCandles] = useState<Candle[]>([])
   const [spotCandles, setSpotCandles] = useState<Candle[]>([])
   const [markCandles, setMarkCandles] = useState<Candle[]>([])
+  const rsi = useMemo(() => calcRSI(spotCandles, 14), [spotCandles, tf])
+  const macd = useMemo(() => calcMACD(spotCandles, 12, 26, 9), [spotCandles, tf])
   const basisCandlesRef = useRef<Candle[]>([])
   const spotCandlesRef = useRef<Candle[]>([])
   const markCandlesRef = useRef<Candle[]>([])
@@ -327,7 +332,7 @@ export default function App() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
           {coinIconUrl ? <img src={coinIconUrl} alt="coin" style={{ width: 20, height: 20 }} /> : null}
-          Basis Viewer
+          Basis Charts
         </h2>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {TF_LIST.map(t => (
@@ -349,6 +354,12 @@ export default function App() {
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark</div>
       <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey={`tf-sync-${tf}`} />
+
+      <div style={{ marginTop: 8, fontSize: 13, color: '#ddd' }}>RSI (Spot)</div>
+      <RSIChart data={rsi} height={120} background="#0e0e0e" textColor="#e5e5e5" sync syncKey={`tf-sync-${tf}`} />
+
+      <div style={{ marginTop: 8, fontSize: 13, color: '#ddd' }}>MACD (Spot)</div>
+      <MACDChart data={macd} height={140} background="#0e0e0e" textColor="#e5e5e5" sync syncKey={`tf-sync-${tf}`} />
 
       <Trades spot={spotTrades} fut={futTrades} />
     </div>
