@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
-import LightChart, { LinePoint } from './LightChart'
+// LightChart removed per request; use candles for all TFs
 import CandleChart, { Candle } from './CandleChart'
 import { Tick, Trade } from './types'
 import { resolveCoinIcon } from './coinIcon'
@@ -59,18 +59,12 @@ function aggregateOHLC(ticks: Tick[], bucketMs: number, pick: (t: Tick) => numbe
 export default function App() {
   const [ticks, setTicks] = useState<Tick[]>([])
   const { tick, status } = useWs()
-  const [tf, setTf] = useState<TF>('tick')
+  const [tf, setTf] = useState<TF>('1s')
   // removed sharedRange state in favor of bus-based sync
   const [coinIconUrl, setCoinIconUrl] = useState<string | null>(null)
   const [spotTrades, setSpotTrades] = useState<Trade[]>([])
   const [futTrades, setFutTrades] = useState<Trade[]>([])
-  // tick-mode line data (incremental)
-  const [basisLine, setBasisLine] = useState<LinePoint[]>([])
-  const [spotLine, setSpotLine] = useState<LinePoint[]>([])
-  const [markLine, setMarkLine] = useState<LinePoint[]>([])
-  const lastSecRef = useRef<number>(-Infinity)
-  const tickIndexRef = useRef<number>(-1)
-  const indexTimesRef = useRef<number[]>([])
+  // tick line state removed
   const [basisCandles, setBasisCandles] = useState<Candle[]>([])
   const [spotCandles, setSpotCandles] = useState<Candle[]>([])
   const [markCandles, setMarkCandles] = useState<Candle[]>([])
@@ -78,6 +72,8 @@ export default function App() {
   const spotCandlesRef = useRef<Candle[]>([])
   const markCandlesRef = useRef<Candle[]>([])
   const candleFlushTimer = useRef<any>(null)
+  const [resetSig, setResetSig] = useState(0)
+  const initialScrolledRef = useRef(false)
 
   // initial 10m backfill from server (if available)
   useEffect(() => {
@@ -92,21 +88,7 @@ export default function App() {
         const mapped: Tick[] = rows.map(r => ({ symbol: r.symbol, spot: r.spot, mark: r.mark, basisBps: r.basisBps, ts: r.ts }))
         mapped.sort((a, b) => a.ts - b.ts)
         setTicks(mapped)
-        // build initial tick lines once
-        const bl: LinePoint[] = []
-        const sl: LinePoint[] = []
-        const ml: LinePoint[] = []
-        indexTimesRef.current = []
-        let idx = -1
-        for (const t of mapped) {
-          idx += 1
-          indexTimesRef.current.push(t.ts)
-          bl.push({ time: idx as any, value: t.basisBps })
-          sl.push({ time: idx as any, value: t.spot })
-          ml.push({ time: idx as any, value: t.mark })
-        }
-        tickIndexRef.current = idx
-        setBasisLine(bl); setSpotLine(sl); setMarkLine(ml)
+        // no tick line build
         // build initial candles for current tf
         const curBucket = (tf === '1m') ? 60000 : 1000
         const outB: Candle[] = []
@@ -136,6 +118,7 @@ export default function App() {
         if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
         basisCandlesRef.current = outB; spotCandlesRef.current = outS; markCandlesRef.current = outM
         setBasisCandles(outB); setSpotCandles(outS); setMarkCandles(outM)
+        if (!initialScrolledRef.current) { setResetSig(v => v + 1); initialScrolledRef.current = true }
       })
       .catch(() => { /* ignore, fallback to WS only */ })
     return () => { aborted = true }
@@ -165,11 +148,6 @@ export default function App() {
     // append to tick lines incrementally (used only in tick mode rendering)
     const vBasis = tick.basisBps, vSpot = tick.spot, vMark = tick.mark
     if (Number.isFinite(vBasis) && Number.isFinite(vSpot) && Number.isFinite(vMark)) {
-      const idx = (tickIndexRef.current = tickIndexRef.current + 1)
-      indexTimesRef.current.push(tick.ts)
-      setBasisLine(arr => [...arr, { time: idx as any, value: vBasis }])
-      setSpotLine(arr => [...arr, { time: idx as any, value: vSpot }])
-      setMarkLine(arr => [...arr, { time: idx as any, value: vMark }])
       // incrementally update candles into refs (batch UI publish)
       const k = Math.floor(tick.ts / bucketMs)
       const time = k * (bucketMs / 1000)
@@ -279,6 +257,7 @@ export default function App() {
     if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
     basisCandlesRef.current = outB; spotCandlesRef.current = outS; markCandlesRef.current = outM
     setBasisCandles(outB); setSpotCandles(outS); setMarkCandles(outM)
+    if (!initialScrolledRef.current) { setResetSig(v => v + 1); initialScrolledRef.current = true }
   }, [ticks.length, bucketMs])
 
   const symbol = tick?.symbol ?? 'BTCUSDT'
@@ -342,7 +321,6 @@ export default function App() {
           Basis Viewer
         </h2>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setTf('tick')} style={{ padding: '4px 8px', background: tf === 'tick' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>Tick</button>
           <button onClick={() => setTf('1s')} style={{ padding: '4px 8px', background: tf === '1s' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1s</button>
           <button onClick={() => setTf('1m')} style={{ padding: '4px 8px', background: tf === '1m' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1m</button>
         </div>
@@ -354,25 +332,13 @@ export default function App() {
       </div>
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Basis</div>
-      {tf === 'tick' ? (
-        <LightChart data={basisLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" indexToTs={indexTimesRef.current} />
-      ) : (
-        <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
-      )}
+      <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" resetSignal={resetSig} />
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Spot</div>
-      {tf === 'tick' ? (
-        <LightChart data={spotLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" indexToTs={indexTimesRef.current} />
-      ) : (
-        <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
-      )}
+      <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" resetSignal={resetSig} />
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark</div>
-      {tf === 'tick' ? (
-        <LightChart data={markLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" indexToTs={indexTimesRef.current} />
-      ) : (
-        <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
-      )}
+      <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" resetSignal={resetSig} />
 
       <Trades spot={spotTrades} fut={futTrades} />
     </div>

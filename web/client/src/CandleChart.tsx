@@ -99,7 +99,7 @@ function CandleChart({
       lastEmittedRef.current = null
       applyingRef.current = false
       lastEmitTsRef.current = 0
-      try { unsubRef.current?.() } catch {}
+      try { unsubRef.current?.() } catch { }
     }
   }, [background, textColor, upColor, downColor, gridColor, height, sync, onRangeChange, syncKey])
 
@@ -109,19 +109,19 @@ function CandleChart({
     const c = chartRef.current
     if (!c) return
     if (syncKey) {
-      try { unsubRef.current?.() } catch {}
+      try { unsubRef.current?.() } catch { }
       unsubRef.current = subscribeRange(syncKey, (r) => {
         if (!r || r.from === undefined || r.to === undefined) return
         try { applyingRef.current = true; c.timeScale().setVisibleLogicalRange(r as any) } catch { } finally { setTimeout(() => { applyingRef.current = false }, 0) }
       })
       const init = getRange(syncKey)
       if (init && init.from !== undefined && init.to !== undefined) {
-        try { applyingRef.current = true; c.timeScale().setVisibleLogicalRange(init as any) } catch {} finally { setTimeout(() => { applyingRef.current = false }, 0) }
+        try { applyingRef.current = true; c.timeScale().setVisibleLogicalRange(init as any) } catch { } finally { setTimeout(() => { applyingRef.current = false }, 0) }
       }
       return
     }
     if (!syncRange || syncRange.from === undefined || syncRange.to === undefined) return
-    try { 
+    try {
       // 현재 범위와 거의 동일하면 재적용 생략
       const cur: any = c.timeScale().getVisibleLogicalRange?.()
       const eps = 0.01
@@ -137,12 +137,6 @@ function CandleChart({
     }
   }, [sync, syncRange, syncKey])
 
-  // reset to latest on signal
-  useEffect(() => {
-    if (!resetSignal) return
-    try { chartRef.current?.timeScale().scrollToRealTime() } catch { }
-  }, [resetSignal])
-
   // set data
   useEffect(() => {
     const s = seriesRef.current
@@ -152,6 +146,12 @@ function CandleChart({
       .map(c => ({ time: Math.floor(c.time as any), open: c.open, high: c.high, low: c.low, close: c.close }))
     s.setData(arr as any)
   }, [data])
+
+  // scroll on external reset signal only
+  useEffect(() => {
+    if (!resetSignal) return
+    try { chartRef.current?.timeScale().scrollToRealTime() } catch {}
+  }, [resetSignal])
 
   return <div ref={containerRef} style={{ width: '100%', height, background }} />
 }
