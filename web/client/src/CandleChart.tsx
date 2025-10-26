@@ -12,11 +12,7 @@ function CandleChart({
   upColor = '#26a69a',
   downColor = '#ef5350',
   gridColor = '#2a2a2a',
-  sync = false,
-  syncKey,
-  syncRange,
   onRangeChange,
-  resetSignal,
 }: {
   data: Candle[]
   height?: number
@@ -25,11 +21,7 @@ function CandleChart({
   upColor?: string
   downColor?: string
   gridColor?: string
-  sync?: boolean
-  syncKey?: string
-  syncRange?: { from: number; to: number } | null
   onRangeChange?: (r: { from: number; to: number }) => void
-  resetSignal?: number
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<ReturnType<typeof LWC.createChart> | null>(null)
@@ -37,6 +29,8 @@ function CandleChart({
   const applyingRef = useRef(false)
   const lastEmittedRef = useRef<{ from: number; to: number } | null>(null)
   const lastEmitTsRef = useRef(0)
+  const prevLenRef = useRef(0)
+  const lastTimeRef = useRef<number | null>(null)
   const unsubRef = useRef<null | (() => void)>(null)
 
   useEffect(() => {
@@ -48,7 +42,7 @@ function CandleChart({
       height,
       layout: { background: { color: background }, textColor },
       rightPriceScale: { visible: true, borderVisible: false },
-      timeScale: { timeVisible: true, secondsVisible: true, borderVisible: false },
+      timeScale: { timeVisible: true, secondsVisible: true, borderVisible: false, shiftVisibleRangeOnNewBar: true },
       grid: { vertLines: { color: gridColor }, horzLines: { color: gridColor } },
     })
     chartRef.current = chart
@@ -61,27 +55,6 @@ function CandleChart({
       wickDownColor: downColor,
     })
     seriesRef.current = series
-
-    if (sync) {
-      try {
-        chart.timeScale().subscribeVisibleLogicalRangeChange((range: any) => {
-          if (applyingRef.current) return
-          if (!range || range.from === undefined || range.to === undefined) return
-          const next = { from: Number(range.from), to: Number(range.to) }
-          const prev = lastEmittedRef.current
-          const eps = 0.01
-          const same = !!prev && Math.abs(prev.from - next.from) < eps && Math.abs(prev.to - next.to) < eps
-          if (same) return
-          const now = Date.now()
-          const MIN_INTERVAL = 30
-          if (now - lastEmitTsRef.current < MIN_INTERVAL) return
-          lastEmitTsRef.current = now
-          lastEmittedRef.current = next
-          if (syncKey) publishRange(syncKey, next)
-          else onRangeChange?.(next)
-        })
-      } catch { }
-    }
 
     const onResize = () => {
       if (containerRef.current) {
@@ -101,59 +74,63 @@ function CandleChart({
       lastEmitTsRef.current = 0
       try { unsubRef.current?.() } catch { }
     }
-  }, [background, textColor, upColor, downColor, gridColor, height, sync, onRangeChange, syncKey])
+  }, [background, textColor, upColor, downColor, gridColor, height, onRangeChange])
 
-  // apply external sync range safely
-  useEffect(() => {
-    if (!sync) return
-    const c = chartRef.current
-    if (!c) return
-    if (syncKey) {
-      try { unsubRef.current?.() } catch { }
-      unsubRef.current = subscribeRange(syncKey, (r) => {
-        if (!r || r.from === undefined || r.to === undefined) return
-        try { applyingRef.current = true; c.timeScale().setVisibleLogicalRange(r as any) } catch { } finally { setTimeout(() => { applyingRef.current = false }, 0) }
-      })
-      const init = getRange(syncKey)
-      if (init && init.from !== undefined && init.to !== undefined) {
-        try { applyingRef.current = true; c.timeScale().setVisibleLogicalRange(init as any) } catch { } finally { setTimeout(() => { applyingRef.current = false }, 0) }
-      }
-      return
-    }
-    if (!syncRange || syncRange.from === undefined || syncRange.to === undefined) return
-    try {
-      // 현재 범위와 거의 동일하면 재적용 생략
-      const cur: any = c.timeScale().getVisibleLogicalRange?.()
-      const eps = 0.01
-      if (cur && cur.from !== undefined && cur.to !== undefined) {
-        const same = Math.abs(Number(cur.from) - syncRange.from) < eps && Math.abs(Number(cur.to) - syncRange.to) < eps
-        if (same) return
-      }
-      applyingRef.current = true
-      c.timeScale().setVisibleLogicalRange(syncRange as any)
-    } catch { } finally {
-      // small timeout to avoid immediate echo
-      setTimeout(() => { applyingRef.current = false }, 0)
-    }
-  }, [sync, syncRange, syncKey])
-
-  // set data
+  // incremental updates to avoid viewport shifts and heavy re-renders
   useEffect(() => {
     const s = seriesRef.current
     if (!s) return
+    const chart = chartRef.current
+    const timeScale = chart?.timeScale()
+    // capture current logical range to restore after data mutation
+    const preRange: any = timeScale?.getVisibleLogicalRange?.()
     const arr = (data ?? [])
       .filter(c => Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close) && Number.isFinite(c.time))
       .map(c => ({ time: Math.floor(c.time as any), open: c.open, high: c.high, low: c.low, close: c.close }))
-    s.setData(arr as any)
-  }, [data])
 
-  // scroll on external reset signal only
-  useEffect(() => {
-    if (!resetSignal) return
-    try { chartRef.current?.timeScale().scrollToRealTime() } catch {}
-  }, [resetSignal])
+    const prevLen = prevLenRef.current
+    const nextLen = arr.length
+
+    if (prevLen === 0) {
+      s.setData(arr as any)
+      prevLenRef.current = nextLen
+      lastTimeRef.current = nextLen ? (arr[nextLen - 1].time as number) : null
+      return
+    }
+
+    if (nextLen < prevLen) {
+      // timeframe changed or reset; reapply full data
+      s.setData(arr as any)
+      prevLenRef.current = nextLen
+      lastTimeRef.current = nextLen ? (arr[nextLen - 1].time as number) : null
+      return
+    }
+
+    if (nextLen === prevLen) {
+      if (nextLen === 0) return
+      const last = arr[nextLen - 1] as any
+      if (lastTimeRef.current === (last.time as number)) {
+        s.update(last)
+      } else {
+        // same count but different last bar key (edge case) → reset
+        s.setData(arr as any)
+      }
+      lastTimeRef.current = last.time as number
+      return
+    }
+
+    // append bars
+    if (nextLen === prevLen + 1) {
+      // fast-path single append
+      s.update(arr[nextLen - 1] as any)
+    } else {
+      // multiple bars appended; reset to avoid internal index drift
+      s.setData(arr as any)
+    }
+    prevLenRef.current = nextLen
+    lastTimeRef.current = (arr[nextLen - 1].time as number)
+  }, [data])
 
   return <div ref={containerRef} style={{ width: '100%', height, background }} />
 }
 export default React.memo(CandleChart)
-

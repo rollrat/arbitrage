@@ -72,8 +72,6 @@ export default function App() {
   const spotCandlesRef = useRef<Candle[]>([])
   const markCandlesRef = useRef<Candle[]>([])
   const candleFlushTimer = useRef<any>(null)
-  const [resetSig, setResetSig] = useState(0)
-  const initialScrolledRef = useRef(false)
 
   // initial 10m backfill from server (if available)
   useEffect(() => {
@@ -118,7 +116,7 @@ export default function App() {
         if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
         basisCandlesRef.current = outB; spotCandlesRef.current = outS; markCandlesRef.current = outM
         setBasisCandles(outB); setSpotCandles(outS); setMarkCandles(outM)
-        if (!initialScrolledRef.current) { setResetSig(v => v + 1); initialScrolledRef.current = true }
+        // do not auto-scroll on initial backfill; keep viewport stable
       })
       .catch(() => { /* ignore, fallback to WS only */ })
     return () => { aborted = true }
@@ -257,7 +255,7 @@ export default function App() {
     if (cb) outB.push(cb); if (cs) outS.push(cs); if (cm) outM.push(cm)
     basisCandlesRef.current = outB; spotCandlesRef.current = outS; markCandlesRef.current = outM
     setBasisCandles(outB); setSpotCandles(outS); setMarkCandles(outM)
-    if (!initialScrolledRef.current) { setResetSig(v => v + 1); initialScrolledRef.current = true }
+    // keep viewport position stable on rebuild
   }, [ticks.length, bucketMs])
 
   const symbol = tick?.symbol ?? 'BTCUSDT'
@@ -332,13 +330,13 @@ export default function App() {
       </div>
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Basis</div>
-      <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" resetSignal={resetSig} />
+      <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" />
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Spot</div>
-      <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" resetSignal={resetSig} />
+      <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" />
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark</div>
-      <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" resetSignal={resetSig} />
+      <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" />
 
       <Trades spot={spotTrades} fut={futTrades} />
     </div>
