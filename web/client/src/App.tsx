@@ -82,6 +82,7 @@ export default function App() {
     let aborted = false
     const now = Date.now()
     const from = now - 60 * 60 * 1000
+    // const from = now - 1000;
     fetch(`${API_BASE}/api/history/ticks?from=${from}&to=${now}`)
       .then(r => (r.ok ? r.json() : []))
       .then((rows: any[]) => {
@@ -355,22 +356,21 @@ export default function App() {
       {tf === 'tick' ? (
         <LightChart data={basisLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
       ) : (
-        <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+        <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
       )}
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Spot</div>
       {tf === 'tick' ? (
         <LightChart data={spotLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
       ) : (
-        <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+        <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
       )}
-
 
       <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark</div>
       {tf === 'tick' ? (
         <LightChart data={markLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
       ) : (
-        <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+        <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="c-sync" />
       )}
 
       <Trades spot={spotTrades} fut={futTrades} />
