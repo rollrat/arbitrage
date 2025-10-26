@@ -1,7 +1,9 @@
-﻿import React, { useEffect, useMemo, useState } from 'react'
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react'
 import LightChart, { LinePoint } from './LightChart'
 import CandleChart, { Candle } from './CandleChart'
-import { Tick } from './types'
+import { Tick, Trade } from './types'
+import { resolveCoinIcon } from './coinIcon'
+import Trades from './Trades'
 
 const DEFAULT_WS = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
 const WS_URL: string = (import.meta as any).env?.VITE_WS_URL || DEFAULT_WS
@@ -18,7 +20,16 @@ function useWs(onFirstOpen?: () => void) {
     ws.onopen = () => { setStatus('open'); onFirstOpen?.() }
     ws.onclose = () => { setStatus('closed'); timer = setTimeout(() => { setStatus('connecting'); ws = new WebSocket(WS_URL) }, 1000) }
     ws.onerror = () => { try { ws?.close() } catch { } }
-    ws.onmessage = (ev) => { try { const t = JSON.parse(ev.data); setTick(t) } catch { } }
+    ws.onmessage = (ev) => {
+      try {
+        const obj = JSON.parse(ev.data)
+        // Only accept BasisTick-like payloads here
+        if (obj && typeof obj === 'object' &&
+          Number.isFinite(obj.spot) && Number.isFinite(obj.mark) && Number.isFinite(obj.basisBps) && Number.isFinite(obj.ts)) {
+          setTick(obj as Tick)
+        }
+      } catch { }
+    }
     return () => { clearTimeout(timer); try { ws?.close() } catch { } }
   }, [])
   return { tick, status }
@@ -29,24 +40,43 @@ function aggregateOHLC(ticks: Tick[], bucketMs: number, pick: (t: Tick) => numbe
   for (const t of ticks) {
     const k = Math.floor((t.ts || Date.now()) / bucketMs)
     const price = pick(t)
+    if (!Number.isFinite(price)) continue
     const prev = map.get(k)
-    if (!prev) map.set(k, { time: k * (bucketMs / 1000), open: price, high: price, low: price, close: price })
-    else { prev.high = Math.max(prev.high, price); prev.low = Math.min(prev.low, price); prev.close = price }
+    if (!prev) map.set(k, { time: Math.floor(k * (bucketMs / 1000)), open: price, high: price, low: price, close: price })
+    else {
+      prev.high = Math.max(prev.high, price)
+      prev.low = Math.min(prev.low, price)
+      prev.close = price
+    }
   }
-  return Array.from(map.values()).sort((a, b) => a.time - b.time)
+  // drop any incomplete candles defensively
+  return Array.from(map.values())
+    .filter(c => [c.open, c.high, c.low, c.close].every(Number.isFinite))
+    .sort((a, b) => a.time - b.time)
 }
 
 export default function App() {
   const [ticks, setTicks] = useState<Tick[]>([])
   const { tick, status } = useWs()
   const [tf, setTf] = useState<TF>('tick')
-  const [sharedRange, setSharedRange] = useState<{ from: number; to: number } | null>(null)
+  // removed sharedRange state in favor of bus-based sync
+  const [coinIconUrl, setCoinIconUrl] = useState<string | null>(null)
+  const [spotTrades, setSpotTrades] = useState<Trade[]>([])
+  const [futTrades, setFutTrades] = useState<Trade[]>([])
+  // tick-mode line data (incremental)
+  const [basisLine, setBasisLine] = useState<LinePoint[]>([])
+  const [spotLine, setSpotLine] = useState<LinePoint[]>([])
+  const [markLine, setMarkLine] = useState<LinePoint[]>([])
+  const lastSecRef = useRef<number>(-Infinity)
+  const [basisCandles, setBasisCandles] = useState<Candle[]>([])
+  const [spotCandles, setSpotCandles] = useState<Candle[]>([])
+  const [markCandles, setMarkCandles] = useState<Candle[]>([])
 
   // initial 10m backfill from server (if available)
   useEffect(() => {
     let aborted = false
     const now = Date.now()
-    const from = now - 10 * 60 * 1000
+    const from = now - 60 * 60 * 1000
     fetch(`${API_BASE}/api/history/ticks?from=${from}&to=${now}`)
       .then(r => (r.ok ? r.json() : []))
       .then((rows: any[]) => {
@@ -54,68 +84,185 @@ export default function App() {
         const mapped: Tick[] = rows.map(r => ({ symbol: r.symbol, spot: r.spot, mark: r.mark, basisBps: r.basisBps, ts: r.ts }))
         mapped.sort((a, b) => a.ts - b.ts)
         setTicks(mapped)
+        // build initial tick lines once
+        let lastSec = -Infinity
+        const bl: LinePoint[] = []
+        const sl: LinePoint[] = []
+        const ml: LinePoint[] = []
+        for (const t of mapped) {
+          let sec = Math.floor(t.ts / 1000)
+          if (sec <= lastSec) sec = lastSec + 1
+          bl.push({ time: sec as any, value: t.basisBps })
+          sl.push({ time: sec as any, value: t.spot })
+          ml.push({ time: sec as any, value: t.mark })
+          lastSec = sec
+        }
+        lastSecRef.current = lastSec
+        setBasisLine(bl); setSpotLine(sl); setMarkLine(ml)
       })
       .catch(() => { /* ignore, fallback to WS only */ })
     return () => { aborted = true }
   }, [])
 
-  // keep all ticks (avoid duplicates by ts)
+  // keep all ticks strictly ascending by ts (ignore out-of-order)
+  const lastTsRef = useRef<number>(0)
   useEffect(() => {
     if (!tick) return
     setTicks(arr => {
-      const n = arr.length
-      if (n > 0 && arr[n - 1].ts === tick.ts) return arr
+      const lastTs = arr.length ? arr[arr.length - 1].ts : lastTsRef.current
+      if (tick.ts <= lastTs) return arr
+      lastTsRef.current = tick.ts
       return [...arr, tick]
     })
+    // append to tick lines incrementally (used only in tick mode rendering)
+    const vBasis = tick.basisBps, vSpot = tick.spot, vMark = tick.mark
+    if (Number.isFinite(vBasis) && Number.isFinite(vSpot) && Number.isFinite(vMark)) {
+      let sec = Math.floor(tick.ts / 1000)
+      if (sec <= lastSecRef.current) sec = lastSecRef.current + 1
+      lastSecRef.current = sec
+      setBasisLine(arr => [...arr, { time: sec as any, value: vBasis }])
+      setSpotLine(arr => [...arr, { time: sec as any, value: vSpot }])
+      setMarkLine(arr => [...arr, { time: sec as any, value: vMark }])
+    }
   }, [tick])
 
-  const bucketMs = useMemo(() => tf === '1m' ? 60000 : 1000, [tf])
-
-  // basis line (tick mode)
-  const basisLine: LinePoint[] = useMemo(
-    () => ticks.map(t => ({ time: (t.ts / 1000), value: t.basisBps })),
-    [ticks]
-  )
-
+  const bucketMs = useMemo(() => {
+    switch (tf) {
+      case '1m':
+        return 60000
+      case '1s':
+      case 'tick':
+      default:
+        // lightweight-charts 罹붾뱾 ?쒕━利덈뒗 珥덈떒?꾨쭔 吏????1珥?踰꾪궥
+        return 1000
+    }
+  }, [tf])
+  // tick-mode lines are maintained incrementally above to avoid O(n) rebuilds
   // candles
-  const basisCandles = useMemo(() => aggregateOHLC(ticks, bucketMs, t => t.basisBps), [ticks, bucketMs])
-  const spotCandles = useMemo(() => aggregateOHLC(ticks, bucketMs, t => t.spot), [ticks, bucketMs])
-  const markCandles = useMemo(() => aggregateOHLC(ticks, bucketMs, t => t.mark), [ticks, bucketMs])
+  // maintain candles incrementally; rebuild on tf change
+  useEffect(() => {
+    if (!ticks.length) { setBasisCandles([]); setSpotCandles([]); setMarkCandles([]); return }
+    const buildCandles = (pick: (t: Tick) => number): Candle[] => {
+      const out: Candle[] = []
+      let curKey: number | null = null
+      let cur: Candle | null = null
+      for (const t of ticks) {
+        const v = pick(t); if (!Number.isFinite(v)) continue
+        const k = Math.floor(t.ts / bucketMs)
+        const time = k * (bucketMs / 1000)
+        if (curKey === null || k !== curKey) {
+          if (cur) out.push(cur)
+          curKey = k
+          cur = { time, open: v, high: v, low: v, close: v }
+        } else {
+          if (cur) { cur.high = Math.max(cur.high, v); cur.low = Math.min(cur.low, v); cur.close = v }
+        }
+      }
+      if (cur) out.push(cur)
+      return out
+    }
+    setBasisCandles(buildCandles(t => t.basisBps))
+    setSpotCandles(buildCandles(t => t.spot))
+    setMarkCandles(buildCandles(t => t.mark))
+  }, [bucketMs, ticks])
 
   const symbol = tick?.symbol ?? 'BTCUSDT'
+
+  // resolve local coin icon under public/coins
+  useEffect(() => {
+    resolveCoinIcon(symbol).then(setCoinIconUrl).catch(() => setCoinIconUrl(null))
+  }, [symbol])
+
+  // open an auxiliary ws for trade feed (spot & futures)
+  useEffect(() => {
+    let ws: WebSocket | null = new WebSocket(WS_URL)
+    let timer: any
+    const spotBuf: Trade[] = []
+    const futBuf: Trade[] = []
+    const flush = () => {
+      if (spotBuf.length) {
+        const chunk = spotBuf.splice(0, spotBuf.length)
+        setSpotTrades(arr => {
+          const next = [...arr, ...chunk]
+          return next.length > 200 ? next.slice(-200) : next
+        })
+      }
+      if (futBuf.length) {
+        const chunk = futBuf.splice(0, futBuf.length)
+        setFutTrades(arr => {
+          const next = [...arr, ...chunk]
+          return next.length > 200 ? next.slice(-200) : next
+        })
+      }
+    }
+    const flushTimer = setInterval(flush, 100)
+    ws.onclose = () => { timer = setTimeout(() => { ws = new WebSocket(WS_URL) }, 1000) }
+    ws.onerror = () => { try { ws?.close() } catch { } }
+    ws.onmessage = (ev) => {
+      try {
+        const obj = JSON.parse(ev.data)
+        if (obj?.type === 'spot_trade' && obj?.price && obj?.qty) {
+          spotBuf.push(obj as Trade)
+        } else if (obj?.type === 'futures_trade' && obj?.price && obj?.qty) {
+          futBuf.push(obj as Trade)
+        }
+      } catch { }
+    }
+    return () => { clearTimeout(timer); clearInterval(flushTimer); try { ws?.close() } catch { } }
+  }, [])
+
+  // ?숈쟻?쇰줈 ????댄?/?뚮퉬肄?媛깆떊
+  useEffect(() => {
+    const base = (symbol || 'BTCUSDT')
+    document.title = `${base} Basis Viewer`
+    const link = document.querySelector("link[rel='icon']") as HTMLLinkElement | null
+    if (link && coinIconUrl) link.href = coinIconUrl
+  }, [symbol, coinIconUrl])
 
   return (
     <div style={{ fontFamily: 'Inter, ui-sans-serif', color: '#eee', background: '#0b0b0b', minHeight: '100vh', padding: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <h2 style={{ margin: 0 }}>Basis Viewer</h2>
+        <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+          {coinIconUrl ? <img src={coinIconUrl} alt="coin" style={{ width: 20, height: 20 }} /> : null}
+          Basis Viewer
+        </h2>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={() => setTf('tick')} style={{ padding: '4px 8px', background: tf === 'tick' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>틱</button>
-          <button onClick={() => setTf('1s')} style={{ padding: '4px 8px', background: tf === '1s' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1초</button>
-          <button onClick={() => setTf('1m')} style={{ padding: '4px 8px', background: tf === '1m' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1분</button>
+          <button onClick={() => setTf('tick')} style={{ padding: '4px 8px', background: tf === 'tick' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>Tick</button>
+          <button onClick={() => setTf('1s')} style={{ padding: '4px 8px', background: tf === '1s' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1s</button>
+          <button onClick={() => setTf('1m')} style={{ padding: '4px 8px', background: tf === '1m' ? '#444' : '#222', color: '#eee', border: '1px solid #333', borderRadius: 4 }}>1m</button>
         </div>
       </div>
 
       <div style={{ marginBottom: 8, fontSize: 14 }}>
-        <span>status: {status} | symbol: {symbol} | </span>
+        <span>status: {status} | symbol: {symbol} | tf: {tf} | </span>
         <span>spot: {tick?.spot?.toFixed(2)} | mark: {tick?.mark?.toFixed(2)} | basis: {tick?.basisBps?.toFixed(2)} bps</span>
       </div>
 
+      <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Basis</div>
       {tf === 'tick' ? (
-        <>
-          <LightChart data={basisLine} height={220} background="#0e0e0e" textColor="#e5e5e5" />
-          <div style={{ marginTop: 4, fontSize: 12, color: '#aaa' }}>basis (bps)</div>
-        </>
+        <LightChart data={basisLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
       ) : (
-        <>
-          <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Basis (candles)</div>
-          <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncRange={sharedRange} onRangeChange={setSharedRange} />
-        </>
+        <CandleChart data={basisCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
       )}
 
-      <div style={{ marginTop: 16, marginBottom: 4, fontSize: 13, color: '#ddd' }}>Spot (candles)</div>
-      <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync={tf !== 'tick'} syncRange={sharedRange} onRangeChange={setSharedRange} />
-      <div style={{ marginTop: 16, marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark (candles)</div>
-      <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync={tf !== 'tick'} syncRange={sharedRange} onRangeChange={setSharedRange} />
+      <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Spot</div>
+      {tf === 'tick' ? (
+        <LightChart data={spotLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+      ) : (
+        <CandleChart data={spotCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+      )}
+
+
+      <div style={{ marginBottom: 4, fontSize: 13, color: '#ddd' }}>Mark</div>
+      {tf === 'tick' ? (
+        <LightChart data={markLine} height={220} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+      ) : (
+        <CandleChart data={markCandles} height={240} background="#0e0e0e" textColor="#e5e5e5" sync syncKey="tf-sync" />
+      )}
+
+      <Trades spot={spotTrades} fut={futTrades} />
     </div>
   )
 }
+
+

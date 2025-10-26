@@ -14,6 +14,7 @@ export class BasisService extends EventEmitter {
   private pg?: Pool;
   private tickBuf: Array<[string, number, number, number, number]> = [];
   private lastFlush = 0;
+  private recent: BasisTick[] = [];
 
   constructor(private env: Env = loadEnv()) {
     super();
@@ -39,6 +40,12 @@ export class BasisService extends EventEmitter {
   }
 
   public getLast(): BasisTick | undefined { return this.last; }
+  public getRecent(windowMs: number): BasisTick[] {
+    const now = Date.now();
+    const from = now - Math.max(0, windowMs);
+    // recent is kept in ascending order
+    return this.recent.filter(t => t.ts >= from);
+  }
 
   private restBaseUrls() {
     const spot = this.env.BINANCE_BASE_URL ?? (this.env.BINANCE_TESTNET ? 'https://testnet.binance.vision' : 'https://api.binance.com');
@@ -74,6 +81,9 @@ export class BasisService extends EventEmitter {
     const basisBps = computeBasisBps(spot, mark);
     const t: BasisTick = { symbol: this.env.SYMBOL, spot, mark, basisBps, ts: Date.now() };
     this.last = t; this.emit('tick', t);
+    // keep in-memory recent buffer (~30 minutes at ~10Hz -> cap by count)
+    this.recent.push(t);
+    if (this.recent.length > 20000) this.recent.splice(0, this.recent.length - 20000);
     if (this.pg) this.pushTick(t.symbol, t.ts, t.spot, t.mark, t.basisBps);
   }
 
@@ -140,3 +150,6 @@ export class BasisService extends EventEmitter {
     }
   }
 }
+
+// Simple shared instance so multiple consumers (gateway, controllers) reuse one stream
+export const basisSingleton = new BasisService();

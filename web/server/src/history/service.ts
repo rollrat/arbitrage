@@ -4,7 +4,7 @@ import { getPool } from '../pg'
 export type TickRow = { symbol: string; ts: number; spot: number; mark: number; basisBps: number }
 
 export class HistoryService {
-  constructor(private env: Env) {}
+  constructor(private env: Env) { }
 
   async getTicks(params: { symbol: string; fromMs: number; toMs: number; limit?: number }): Promise<TickRow[]> {
     const pool = getPool(this.env)
@@ -14,8 +14,8 @@ export class HistoryService {
                  FROM ticks
                  WHERE symbol = $1 AND ts_ms >= $2 AND ts_ms <= $3
                  ORDER BY ts_ms ASC
-                 LIMIT $4`
-    const res = await pool.query(sql, [params.symbol, params.fromMs, params.toMs, limit])
+               `
+    const res = await pool.query(sql, [params.symbol, params.fromMs, params.toMs])
     return res.rows as TickRow[]
   }
 }
