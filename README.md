@@ -81,3 +81,15 @@ Notes
 - This strategy is market-neutral, not risk-free. Funding changes, fees, slippage, API failures, and liquidation risks remain.
 - Test thoroughly on testnet. Start with small notionals.
 - State is persisted in `arb_state.json`.
+
+Real-time Basis Plot (GUI)
+- File: `arb_plot.py`
+- Shows live basis (bps) between Spot price and Futures Mark price in a window.
+- Example (testnet):
+  - python arb_plot.py --env .env --testnet --futures-testnet --symbol BTCUSDT --interval 1.5 --history 300 --auto-scale --entry-bps 0.5 --exit-bps 0.2
+- Options:
+  - --interval: polling seconds (default 1.5)
+  - --history: number of recent points kept (default 300)
+  - --auto-scale: enable Y-axis autoscaling (else use --y-min/--y-max)
+  - --entry-bps/--exit-bps: draw threshold lines
+  - --theme: dark|light
